@@ -1,8 +1,8 @@
 package storage
 
 import (
+	"math/bits"
 	"unsafe"
-
 	"mit.edu/dsg/godb/common"
 )
 
@@ -45,13 +45,22 @@ func (b *Bitmap) SetBit(i int, on bool) (originalValue bool) {
 	bitindex := i%64 
 	currentboard := b.words[boardindex]
 	mask := uint64(1)<<uint64(bitindex)
-	
-	panic("unimplemented")
+	originalValue = (currentboard & mask) !=0 
+	if on==true{
+		b.words[boardindex] =currentboard | mask
+	}else{
+		b.words[boardindex] = currentboard & ^mask
+	}
+	return originalValue
 }
 
 // LoadBit returns the value of the bit at index i.
 func (b *Bitmap) LoadBit(i int) bool {
-	panic("unimplemented")
+	boardindex := i/64
+	bitindex := i%64 
+	currentboard := b.words[boardindex]
+	mask := uint64(1)<<uint64(bitindex)
+	return (currentboard & mask)!=0
 }
 
 // FindFirstZero searches for the first bit set to 0 (false) in the bitmap.
@@ -61,6 +70,36 @@ func (b *Bitmap) LoadBit(i int) bool {
 //
 // Returns the index of the first zero bit found, or -1 if the bitmap is entirely full.
 func (b *Bitmap) FindFirstZero(startHint int) int {
-	
-	panic("unimplemented")
+	if b.numBits==0{
+		return -1
+	}
+	startHint= startHint%b.numBits
+	boardIndex:= startHint/64
+	bitindex:=startHint%64
+	//numWords:= len(b.words)
+
+	word:= b.words[boardIndex]
+	mask := (uint64(1) << uint64(bitindex))-1
+	word = word | mask
+	if word != ^uint64(0){
+		zeroIdx:=bits.TrailingZeros64(^word)
+		resultidx := (boardIndex * 64 ) + zeroIdx
+		if resultidx<b.numBits{
+			return resultidx
+		}
+	}
+
+	for i:= 1; i<=len(b.words);i++{
+		currWordIdx:= (boardIndex +i)%len(b.words)
+		curr:=b.words[currWordIdx]
+		if curr == ^ uint64(0){
+			continue
+		}
+		zeroIdx:= bits.TrailingZeros64(^curr)
+		resultidx:=(currWordIdx * 64 ) + zeroIdx
+		if resultidx<b.numBits{
+			return resultidx
+		}
+	}
+	return -1 
 }
