@@ -24,7 +24,7 @@ type PageFrame struct {
 	pinCount int32
 	isDirty bool
 	metaLatch sync.Mutex
-	recentlyUsed bool
+	refCount int32
 }
 
 // Detect system endianness -- compiler should statically replace this with a constant

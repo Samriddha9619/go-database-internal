@@ -1,21 +1,16 @@
 package storage
 
 import (
+	"runtime"
 	"sync"
 
 	"github.com/puzpuzpuz/xsync/v3"
 	"mit.edu/dsg/godb/common"
 )
 
-// BufferPool manages the reading and writing of database pages between the DiskFileManager and memory.
-// It acts as a central cache to keep "hot" pages in memory with fixed capacity and selectively evicts
-// pages to disk when the pool becomes full. Users will need to coordinate concurrent access to pages
-// using page-level latches and metadata (which you should define in page.go). All methods
-// must be thread-safe, as multiple threads will request the same or different pages concurrently.
-// To get full credit, you likely need to do better than coarse-grained latching (i.e., a global latch for the entire
-// BufferPool instance).
+const maxRefCount int32 = 2
+
 type BufferPool struct {
-	// add more fields here...
 	storageManager DBFileManager
 	frames         []*PageFrame
 	pageTable      *xsync.MapOf[common.PageID, *PageFrame]
@@ -23,10 +18,7 @@ type BufferPool struct {
 	poolLatch      sync.Mutex
 }
 
-// NewBufferPool creates a new BufferPool with a fixed capacity defined by numPages. It requires a
-// storageManager to handle the underlying disk I/O operations.
-//
-// Hint: You will need to worry about logManager until Lab 3
+// NewBufferPool creates a new BufferPool with a fixed capacity defined by numPages.
 func NewBufferPool(numPages int, storageManager DBFileManager, logManager LogManager) *BufferPool {
 	bp := &BufferPool{
 		storageManager: storageManager,
@@ -43,80 +35,179 @@ func NewBufferPool(numPages int, storageManager DBFileManager, logManager LogMan
 // StorageManager returns the underlying disk manager.
 func (bp *BufferPool) StorageManager() DBFileManager {
 	return bp.storageManager
-
 }
 
-// GetPage retrieves a page from the buffer pool, ensuring it is pinned (i.e. prevented from eviction until
-// unpinned) and ready for use. If the page is already in the pool, the cached bytes are returned. If the page is not
-// present, the method must first make space by selecting a victim frame to evict
-// (potentially writing it to disk if dirty), and then read the requested page from disk into that frame.
+// GetPage retrieves a page from the buffer pool.
 func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
-	frame, ok := bp.pageTable.Load(pageID)
-	if ok {
+	for {
+		frame, ok := bp.pageTable.Load(pageID)
+		if !ok {
+			break
+		}
 		frame.metaLatch.Lock()
+		if frame.pageID != pageID {
+			frame.metaLatch.Unlock()
+			continue
+		}
 		frame.pinCount++
-		frame.recentlyUsed = true
+		if frame.refCount < maxRefCount {
+			frame.refCount++
+		}
 		frame.metaLatch.Unlock()
 		return frame, nil
 	}
-	bp.poolLatch.Lock()
-	defer bp.poolLatch.Unlock()
-	for {
-		frame := bp.frames[bp.clockHand]
-		frame.metaLatch.Lock()
-		if frame.pinCount > 0 {
-			frame.metaLatch.Unlock()
-			bp.clockHand = (bp.clockHand + 1) % len(bp.frames)
-		}
-		if frame.pinCount == 0 && frame.recentlyUsed == true {
-			frame.recentlyUsed = false
-		}
-		if frame.pinCount == 0 && frame.recentlyUsed == false {
-			break
-		}
-	}
-	err := bp.flushFrame(frame)
-	if err!= nil{
-		frame.metaLatch.Unlock()
-		return nil,err
-	}
-	bp.pageTable.Delete(frame.pageID)
-	dbFile,err:= bp.storageManager.GetDBFile(pageID.Oid)
-	if err!=nil{
-		frame.metaLatch.Unlock()
-		return nil,err
-	}
-	err = dbFile.ReadPage(int(pageID.PageNum),frame.Bytes[:])
-	if err!=nil{
-		frame.metaLatch.Unlock()
-		return nil,err
-	}
-	frame.pageID=pageID
-	frame.pinCount=1
-	frame.isDirty=false
-	frame.recentlyUsed=true
 
-	bp.pageTable.Store(pageID,frame)
+	bp.poolLatch.Lock()
+
+	if frame, ok := bp.pageTable.Load(pageID); ok {
+		bp.poolLatch.Unlock()
+		frame.metaLatch.Lock()
+		if frame.pageID == pageID {
+			frame.pinCount++
+			if frame.refCount < maxRefCount {
+				frame.refCount++
+			}
+			frame.metaLatch.Unlock()
+			return frame, nil
+		}
+		frame.metaLatch.Unlock()
+		return bp.GetPage(pageID)
+	}
+
+	// CLOCK-Sweep victim selection.
+	// First pass: decrement refCount by 1 (preserves scan resistance for hot pages).
+	// Second pass: aggressively zero refCount (guarantees finding a victim quickly).
+	var frame *PageFrame
+	poolSize := len(bp.frames)
+
+sweepRestart:
+	passesAllowed := 2
+	if poolSize > 1000 {
+		passesAllowed = 1
+	}
+	for pass := 0; pass < passesAllowed; pass++ {
+		for i := 0; i < poolSize; i++ {
+			frame = bp.frames[bp.clockHand]
+
+			if frame.pinCount == 0 {
+				if frame.refCount == 0 {
+					frame.metaLatch.Lock()
+					if frame.pinCount == 0 && frame.refCount == 0 {
+						goto foundVictim
+					}
+					frame.metaLatch.Unlock()
+				} else {
+					if pass == 0 && poolSize <= 1000 {
+						frame.refCount--
+					} else {
+						frame.refCount = 0
+					}
+					if frame.refCount == 0 {
+						frame.metaLatch.Lock()
+						if frame.pinCount == 0 && frame.refCount == 0 {
+							goto foundVictim
+						}
+						frame.metaLatch.Unlock()
+					}
+				}
+			}
+			bp.clockHand++
+			if bp.clockHand >= poolSize {
+				bp.clockHand = 0
+			}
+		}
+	}
+
+	bp.poolLatch.Unlock()
+	runtime.Gosched()
+	bp.poolLatch.Lock()
+
+	if rframe, rok := bp.pageTable.Load(pageID); rok {
+		bp.poolLatch.Unlock()
+		rframe.metaLatch.Lock()
+		if rframe.pageID == pageID {
+			rframe.pinCount++
+			if rframe.refCount < maxRefCount {
+				rframe.refCount++
+			}
+			rframe.metaLatch.Unlock()
+			return rframe, nil
+		}
+		rframe.metaLatch.Unlock()
+		return bp.GetPage(pageID)
+	}
+
+	goto sweepRestart
+
+foundVictim:
+
+	oldPageID := frame.pageID
+	frame.pinCount = 1
+	frame.pageID = pageID
+	bp.pageTable.Store(pageID, frame)
+	bp.clockHand = (bp.clockHand + 1) % len(bp.frames)
+
+	bp.poolLatch.Unlock()
+
+	if frame.isDirty {
+		dbFile, err := bp.storageManager.GetDBFile(oldPageID.Oid)
+		if err != nil {
+			bp.pageTable.Delete(pageID)
+			bp.pageTable.Delete(oldPageID)
+			frame.pinCount = 0
+			frame.pageID = common.PageID{}
+			frame.metaLatch.Unlock()
+			return nil, err
+		}
+		err = dbFile.WritePage(int(oldPageID.PageNum), frame.Bytes[:])
+		if err != nil {
+			bp.pageTable.Delete(pageID)
+			bp.pageTable.Delete(oldPageID)
+			frame.pinCount = 0
+			frame.pageID = common.PageID{}
+			frame.metaLatch.Unlock()
+			return nil, err
+		}
+		frame.isDirty = false
+	}
+
+	bp.pageTable.Delete(oldPageID)
+
+	frame.refCount = 1
+	dbFile, err := bp.storageManager.GetDBFile(pageID.Oid)
+	if err != nil {
+		bp.pageTable.Delete(pageID)
+		frame.pinCount = 0
+		frame.pageID = common.PageID{}
+		frame.metaLatch.Unlock()
+		return nil, err
+	}
+	err = dbFile.ReadPage(int(pageID.PageNum), frame.Bytes[:])
+	if err != nil {
+		bp.pageTable.Delete(pageID)
+		frame.pinCount = 0
+		frame.pageID = common.PageID{}
+		frame.metaLatch.Unlock()
+		return nil, err
+	}
+
 	frame.metaLatch.Unlock()
-	return frame,nil
+	return frame, nil
 }
 
-// UnpinPage indicates that the caller is done using a page. It unpins the page, making the page potentially evictable
-// if no other thread is accessing it. If the setDirty flag is true, the page is marked as modified, ensuring
-// it will be written back to disk before eviction.
 func (bp *BufferPool) UnpinPage(frame *PageFrame, setDirty bool) {
 	frame.metaLatch.Lock()
-	if frame.pinCount!=0{
-	frame.pinCount=frame.pinCount-1
+	if frame.pinCount != 0 {
+		frame.pinCount--
 	}
-	if setDirty==true{
-		frame.isDirty=true
+	if setDirty {
+		frame.isDirty = true
 	}
 	frame.metaLatch.Unlock()
 }
 
 func (bp *BufferPool) flushFrame(frame *PageFrame) error {
-	if frame.isDirty == false {
+	if !frame.isDirty {
 		return nil
 	}
 	dbFile, err := bp.storageManager.GetDBFile(frame.pageID.Oid)
@@ -131,17 +222,20 @@ func (bp *BufferPool) flushFrame(frame *PageFrame) error {
 	return nil
 }
 
-// FlushAllPages flushes all dirty pages to disk that have an LSN less than `flushedUntil`, regardless of pins.
-// This is typically called during a checkpoint or Shutdown to ensure durability, but also useful for tests
 func (bp *BufferPool) FlushAllPages() error {
-	panic("unimplemented")
+	for i := 0; i < len(bp.frames); i++ {
+		frame := bp.frames[i]
+		frame.metaLatch.Lock()
+		err := bp.flushFrame(frame)
+		if err != nil {
+			frame.metaLatch.Unlock()
+			return err
+		}
+		frame.metaLatch.Unlock()
+	}
+	return nil
 }
 
-// GetDirtyPageTableSnapshot returns a map of all currently dirty pages and their RecoveryLSN.
-// This is called during checkpoint to snapshot the current DPT into the log.
-//
-// Hint: You do not need to worry about this function until lab 4
 func (bp *BufferPool) GetDirtyPageTableSnapshot() map[common.PageID]LSN {
-	// You will not need to implement this until lab4
 	panic("unimplemented")
 }
