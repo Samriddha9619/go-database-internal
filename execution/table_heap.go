@@ -156,12 +156,33 @@ func (tableHeap *TableHeap) VacuumPage(pageID common.PageID) error {
 // Iterator creates a new TableHeapIterator to scan the table. It acquires the supplied lock on the table (S, X, or SIX),
 // and uses the supplied byte slice to fetch tuples in the returned iterator (for zero-allocation scanning).
 func (tableHeap *TableHeap) Iterator(txn *transaction.TransactionContext, mode transaction.DBLockMode, buffer []byte) (TableHeapIterator, error) {
-	panic("unimplemented")
+	file,err:= tableHeap.bufferPool.StorageManager().GetDBFile(tableHeap.oid)
+	if err!=nil{
+		return TableHeapIterator{},err
+	}
+	numPages,err:=file.NumPages()
+	if err!=nil{
+		return TableHeapIterator{},err
+	}
+	return TableHeapIterator{
+	tableHeap:      tableHeap,
+    buffer:         buffer,
+    numPages:       numPages,
+    currentPageNum: 0,
+    currentSlot:    -1,
+	},nil
 }
 
 // TableHeapIterator iterates over all valid (allocated and non-deleted) tuples in the heap.
 type TableHeapIterator struct {
-	// Fill me in!
+	tableHeap *TableHeap 
+	buffer []byte
+	numPages int
+	currentPageNum int
+	currentSlot int
+	currentFrame *storage.PageFrame
+	currentHeapPage storage.HeapPage
+	err error
 }
 
 // IsNil returns true if the TableHeapIterator is the default, uninitialized value

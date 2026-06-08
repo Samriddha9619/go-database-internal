@@ -298,4 +298,94 @@ You should expect to complete a short write-up in-class about the lab. To get fu
 * **60%**: Passing public unit tests (Bitmap, HeapPage, BufferPool, TableHeap).
 * **40%**: Manual grading of code quality, hidden tests, and write-up.
 
+Good luck!## Part 3: Table Heap & Iterators
+
+**File:** `godb/execution/table_heap.go`
+
+The `TableHeap` represents a physical table on disk, which is a collection of `HeapPage`s. It is responsible for
+providing the low-level interface that allows the database execution engine to perform tuple-level operations—such as
+insertions, updates, deletions, and scans, while abstracting away the complexity of physical page tracking and memory
+management. This layer is often referred to as **Access Methods** in production systems. 
+
+While it may sound like `TableHeap` is just a thin wrapper around `HeapPage`s, it is responsible for space 
+management, which can be quite complex. In a production DBMS, insertion performance is critical. Scanning the
+file to find a free slot (First-Fit) is too slow because it requires reading many pages from disk, and can be linear to
+the number of pages in the file. Conversely, always appending to the end (Append-Only) is fast but wastes space if
+records are deleted. Production systems often need to devise additional mechanisms to track space usage within the 
+heap file and balance between insertion performance and space utilization. For most databases, however, the assumption
+is that deletion is a rare operation and is often performed as background maintenance (e.g., nightly). Therefore, for
+this lab, you will focus on the append-only strategy and may attempt to implement a more sophisticated strategy to
+reuse slots for extra credit.
+
+Your `TableHeap` implementation should be thread-safe by making use of page-level latches. You will notice many methods
+(like `ReadTuple` or `Iterator`) take a `[]byte` buffer as an argument. In high-performance systems, allocating new memory
+(e.g., `make([]byte)`) for every single tuple read (i.e., in a tight loop) creates massive pressure on the memory allocator
+and garbage collector (of higher-level languages like Go), which will tank performance and scalability. Therefore, you
+will see many methods passing a reusable `buffer` parameter that can be reused to avoid unnecessary allocations. This
+will be especially important in later labs. 
+
+**A Note on Transactions and Logging:**
+You will notice concepts like `TransactionContext` and `LogManager` in the code base. **For Lab 1, you do not need to
+implement transactions or logging.** You can ignore these parameters for now.
+
+### Implementation Tasks
+
+You need to implement the following:
+
+1. **`InsertTuple`**: Find a slot in the table and insert the tuple, allocating new pages if necessary.
+2. **`DeleteTuple` / `ReadTuple` / `UpdateTuple`**: Fetch the page containing the RecordID from the Buffer Pool and perform the requested operation.
+3. **`Iterator`**: Implement the `TableHeapIterator` struct, and associated methods. This should allow you to scan the entire 
+   table in a single pass. When scanning, you must skip allocation map pages, empty slots, and deleted tuples.
+4. **`VacuumPage`**: Finally, implement this method to reclaim space in a specific page (useful for background garbage collection), and update the 
+   associated allocation map.  You do not need to implement the logic to invoke this method in this lab.
+
+**Test:**
+Run `go test -v ./execution -run TableHeap`
+
+---
+
+## Part 4: Slot Reuse (Extra Credit)
+
+In the standard implementation of `InsertTuple`, you focused on the "Append-Only" strategy (always adding to the last
+page). As mentioned, this approach maximizes **Insertion Performance** at the cost **Space Utilization**.
+
+For extra credit, your task is to modify `InsertTuple` to efficiently find and reuse free slots within the table, without
+incurring significant overhead. This is an open-ended design challenge that explores the fundamental trade-off
+of **Insert Latency vs. Space Utilization**. You will likely need to add metadata pages to the heap to track space usage
+within the heap. We will provide a variety of traces with different access patterns, and we will measure your
+implementation's average insertion latency and space utilization over a series of runs. There is no single "correct"
+algorithm here. You are free to design your own strategy and justify your solution. If you attempt the extra credit,
+you should be prepared to explain your design choices and justify your tradeoffs.
+
+---
+## Grading and Submission
+
+### 1. Submission
+
+This lab has an autograded component. Create a zip file containing your `godb` directory and your write-up.
+
+```bash
+zip -r lab1_submission.zip . -x "*.git*"
+
+
+```
+Upload this zip file to [Gradescope].
+
+We reserve the right to re-execute tests after the deadline, as concurrency bugs are often non-deterministic. We also
+reserve the right to run additional hidden tests on your code. It is your responsibility to ensure that your code can
+reliably pass all tests under repeated runs and different system conditions.
+
+### 2. Lab Write-up
+
+You should expect to complete a short write-up in-class about the lab. To get full credit, you should be prepared to answer the following:
+
+* Basic conceptual questions about the codebase and the programming task.
+* Questions about your design decisions (e.g., locking strategy in BufferPool).
+* Any challenges you faced, the amount of time you spent on the lab, and feedback on the lab for future semesters.
+
+**Grading Breakdown:**
+
+* **60%**: Passing public unit tests (Bitmap, HeapPage, BufferPool, TableHeap).
+* **40%**: Manual grading of code quality, hidden tests, and write-up.
+
 Good luck!
