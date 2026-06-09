@@ -1,6 +1,6 @@
 module mit.edu/dsg/godb
 
-go 1.21
+go 1.25.0
 
 require (
 	github.com/puzpuzpuz/xsync/v3 v3.5.1

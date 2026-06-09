@@ -3,6 +3,7 @@ package execution
 import (
 	"errors"
 
+	//"golang.org/x/tools/go/analysis/passes/nilfunc"
 	"mit.edu/dsg/godb/catalog"
 	"mit.edu/dsg/godb/common"
 	"mit.edu/dsg/godb/storage"
@@ -103,7 +104,7 @@ func (tableHeap *TableHeap) DeleteTuple(txn *transaction.TransactionContext, rid
 	}
 	defer tableHeap.bufferPool.UnpinPage(frame,true)
 	heapPage:= frame.AsHeapPage()
-	if heapPage.IsAllocated(rid) || heapPage.IsDeleted(rid){
+	if !heapPage.IsAllocated(rid) || heapPage.IsDeleted(rid){
 		return ErrTupleDeleted
 	}
 	heapPage.MarkDeleted(rid,true)
@@ -119,7 +120,7 @@ func (tableHeap *TableHeap) ReadTuple(txn *transaction.TransactionContext, rid c
 	}
 	defer tableHeap.bufferPool.UnpinPage(frame,false)
 	heapPage:= frame.AsHeapPage()
-	if heapPage.IsAllocated(rid) || heapPage.IsDeleted(rid){
+	if !heapPage.IsAllocated(rid) || heapPage.IsDeleted(rid){
 		return ErrTupleDeleted
 	}
 	rawTuple := heapPage.AccessTuple(rid)
@@ -136,7 +137,7 @@ func (tableHeap *TableHeap) UpdateTuple(txn *transaction.TransactionContext, rid
 	}
 	defer tableHeap.bufferPool.UnpinPage(frame,true)
 	heapPage:= frame.AsHeapPage()
-	if heapPage.IsAllocated(rid) || heapPage.IsDeleted(rid){
+	if !heapPage.IsAllocated(rid) || heapPage.IsDeleted(rid){
 		return ErrTupleDeleted
 	}
 	rawTuple:= heapPage.AccessTuple(rid)
@@ -187,32 +188,70 @@ type TableHeapIterator struct {
 
 // IsNil returns true if the TableHeapIterator is the default, uninitialized value
 func (it *TableHeapIterator) IsNil() bool {
-	panic("unimplemented")
+	return it.tableHeap==nil
 }
 
 // Next advances the iterator to the next valid tuple.
 // It manages page pins automatically (unpinning the old page when moving to a new one).
 func (it *TableHeapIterator) Next() bool {
-	panic("unimplemented")
+	for{
+		it.currentSlot++
+		if it.currentPageNum>=it.numPages{
+			return false
+		}
+		if it.currentFrame==nil{
+			pid:= common.PageID{Oid: it.tableHeap.oid,PageNum: int32(it.currentPageNum)}
+			frame,err:= it.tableHeap.bufferPool.GetPage(pid)
+			if err!=nil{
+				it.err=err
+				return false
+			}
+			heapPage:=frame.AsHeapPage()
+			it.currentFrame=frame
+			it.currentHeapPage=heapPage
+		}
+		if it.currentSlot>= int(it.currentHeapPage.NumSlots()){
+			it.tableHeap.bufferPool.UnpinPage(it.currentFrame,false)
+			it.currentFrame=nil
+			it.currentPageNum++
+			it.currentSlot=-1
+			continue
+		}
+		rid:= common.RecordID{PageID: common.PageID{Oid: it.tableHeap.oid,PageNum: int32(it.currentPageNum)},Slot: int32(it.currentSlot)}
+		if it.currentHeapPage.IsAllocated(rid) && !it.currentHeapPage.IsDeleted(rid){
+			return true
+		}
+	}
 }
 
 // CurrentTuple returns the raw bytes of the tuple at the current cursor position.
 // The bytes are valid only until Next() is called again.
 func (it *TableHeapIterator) CurrentTuple() storage.RawTuple {
-	panic("unimplemented")
+	if it.currentFrame ==nil {
+		return nil
+	}
+	rid := common.RecordID{PageID: common.PageID{Oid: it.tableHeap.oid,PageNum: int32(it.currentPageNum)},Slot: int32(it.currentSlot)}
+	return it.currentHeapPage.AccessTuple(rid)
 }
 
 // CurrentRID returns the RecordID of the current tuple.
 func (it *TableHeapIterator) CurrentRID() common.RecordID {
-	panic("unimplemented")
+	if it.currentFrame ==nil {
+		return common.RecordID{}
+	}
+	return common.RecordID{PageID: common.PageID{Oid: it.tableHeap.oid,PageNum: int32(it.currentPageNum)},Slot: int32(it.currentSlot)}
 }
 
 // CurrentRID returns the first error encountered during iteration, if any.
 func (it *TableHeapIterator) Error() error {
-	panic("unimplemented")
+	return it.err
 }
 
 // Close releases any resources associated with the TableHeapIterator
 func (it *TableHeapIterator) Close() error {
-	panic("unimplemented")
+	if it.currentFrame != nil {
+		it.tableHeap.bufferPool.UnpinPage(it.currentFrame,false)
+		it.currentFrame=nil
+	}
+	return nil 
 }
