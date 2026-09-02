@@ -7,33 +7,52 @@ import (
 
 // LimitExecutor limits the number of tuples returned by the child executor.
 type LimitExecutor struct {
-	// Fill me in!
+	planNode *planner.LimitNode
+	child    Executor
+	limit    int
+	count    int
+	current  storage.Tuple
 }
 
 func NewLimitExecutor(plan *planner.LimitNode, child Executor) *LimitExecutor {
-	panic("unimplemented")
+	return &LimitExecutor{
+		planNode: plan,
+		child:    child,
+		limit:    plan.Limit,
+	}
 }
 
 func (e *LimitExecutor) PlanNode() planner.PlanNode {
-	panic("unimplemented")
+	return e.planNode
 }
 
 func (e *LimitExecutor) Init(ctx *ExecutorContext) error {
-	panic("unimplemented")
+	e.count = 0
+	return e.child.Init(ctx)
 }
 
 func (e *LimitExecutor) Next() bool {
-	panic("unimplemented")
+	if e.count >= e.limit {
+		return false
+	}
+	
+	if !e.child.Next() {
+		return false
+	}
+	
+	e.current = e.child.Current()
+	e.count++
+	return true
 }
 
 func (e *LimitExecutor) Current() storage.Tuple {
-	panic("unimplemented")
+	return e.current
 }
 
 func (e *LimitExecutor) Error() error {
-	panic("unimplemented")
+	return e.child.Error()
 }
 
 func (e *LimitExecutor) Close() error {
-	panic("unimplemented")
+	return e.child.Close()
 }
