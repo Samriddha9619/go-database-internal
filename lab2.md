@@ -242,15 +242,6 @@ them according to the `OrderBy` expression. Subsequent calls simply returns the 
 **Test:**
   Run `go test -v ./execution -run Sort`
 
-### 3. Aggregation (`AggregateExecutor`)
-* **Logic:** Implement grouped aggregation (e.g., `SELECT count(*), sum(a) FROM table GROUP BY b`).
-* **Strategy:** Use **Hash Aggregation**.
-    * In the first call to `Next()`, consume *all* tuples from the child.
-    * Maintain a Hash Map (you may use the one in `execution/hash_table.go`) where keys are the `GROUP BY` fields and
-      values are the running aggregates (Sum, Count, Min, Max).
-    * Update the aggregate state for every tuple.
-    * Subsequent calls to `Next()` iterate through the populated hash map and return the results.
-
 **Test:**
 Run `go test -v ./execution -run Aggregate`
 
