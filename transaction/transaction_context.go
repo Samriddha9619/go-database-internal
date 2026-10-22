@@ -18,37 +18,58 @@ type logRecordBuffer struct {
 
 // newLogRecordBuffer creates a stack with some pre-allocated capacity.
 func newLogRecordBuffer() *logRecordBuffer {
-	panic("unimplemented")
+	return &logRecordBuffer{
+		buffer:  make([]byte, 0, 1024), 
+		offsets: make([]int, 0, 16),    
+	}
+
 }
 
 // allocate reserves `totalSize` bytes in the buffer for a new record.
 // It returns a slice referencing the allocated space.
 // It also records the offset of this new record, effectively pushing it onto the stack.
 func (s *logRecordBuffer) allocate(totalSize int) []byte {
-	panic("unimplemented")
+	s.offsets=append(s.offsets,len(s.buffer))
+	s.buffer=append(s.buffer,make([]byte,totalSize)...)
+	return s.buffer[s.offsets[len(s.offsets)-1]:]
 }
 
 // len returns the number of records currently stored in the buffer.
 func (s *logRecordBuffer) len() int {
-	panic("unimplemented")
+	return len(s.offsets)	
 }
 
 // get returns the LogRecord at the specified index `i`.
 // The index `i` corresponds to the order of insertion (0 is the first record).
 func (s *logRecordBuffer) get(i int) storage.LogRecord {
-	panic("unimplemented")
+	start:=s.offsets[i]
+	end:=0
+	if i== len(s.offsets)-1{
+		end=len(s.buffer)
+	}
+	if i< len(s.offsets)-1{
+		end=s.offsets[i+1]
+	}
+	return storage.AsLogRecord(s.buffer[start:end])
 }
 
 // pop removes the most recently added record from the buffer.
 // This effectively rewinds the stack by one record.
 func (s *logRecordBuffer) pop() {
-	panic("unimplemented")
+	if len(s.offsets)==0{
+		return
+	}
+
+	s.buffer=s.buffer[:s.offsets[len(s.offsets)-1]]
+//the last offset location will be the end of the buffer after popping. I tried to write buffer after the offset which would have resulted in error.
+	s.offsets=s.offsets[:len(s.offsets)-1]
 }
 
 // reset clears the buffer (sets length to 0) without releasing the underlying memory.
 // This is used when reusing the TransactionContext.
 func (s *logRecordBuffer) reset() {
-	panic("unimplemented")
+	s.buffer=s.buffer[:0]
+	s.offsets=s.offsets[:0]
 }
 
 // TransactionContext holds the runtime state of a single transaction.
